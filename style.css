@@ -1,0 +1,184 @@
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/IBMPlexMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/IBMPlexMono-Italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/IBMPlexMono-Bold.woff2") format("woff2");
+}
+
+:root {
+  --paper: #f4ecd8;
+  --ink: #1a1a1a;
+  --col: 720px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+body {
+  font-family: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+  font-size: 14px;
+  line-height: 1.55;
+  padding: 32px 16px 64px;
+}
+
+main { max-width: var(--col); margin: 0 auto; }
+
+pre, .mono {
+  font: inherit;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.profile-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: flex-start;
+  margin: 24px 0;
+}
+.profile-block {
+  flex: 1 1 320px;
+  margin: 0;
+  white-space: pre-wrap;
+}
+.portrait {
+  flex: 0 0 auto;
+  margin: 0;
+  white-space: pre;
+  line-height: 1.0;
+}
+@media (max-width: 600px) {
+  .portrait { font-size: 12px; }
+}
+
+#banner {
+  max-width: var(--col);
+  margin: 0 auto 32px;
+  overflow-x: auto;
+}
+.banner-art {
+  font-size: 10px;
+  line-height: 1.0;
+  white-space: pre;
+  margin: 0;
+}
+.banner-name {
+  margin-top: 18px;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+}
+@media (max-width: 720px) {
+  .banner-art { font-size: 7px; }
+}
+@media (max-width: 480px) {
+  .banner-art { font-size: 6px; }
+}
+
+button {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+button:hover { background: var(--ink); color: var(--paper); }
+button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+footer {
+  max-width: var(--col);
+  margin: 32px auto 0;
+  display: flex;
+  gap: 16px;
+}
+
+/* Chip rail */
+#chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 24px 0;
+  padding: 10px 0;
+  border-top: 1px dashed var(--ink);
+  border-bottom: 1px dashed var(--ink);
+}
+.chip {
+  padding: 2px 4px;
+  white-space: nowrap;
+}
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+
+/* Doc section frame */
+.doc { margin: 32px 0; }
+.doc-head, .doc-foot {
+  font-size: 12px;
+  opacity: 0.75;
+  margin: 10px 0;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* Markdown rendered inside a doc body */
+.doc-body h1, .doc-body h2, .doc-body h3 {
+  font-size: inherit;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin: 28px 0 10px;
+}
+.doc-body h1 { border-bottom: 1px solid var(--ink); padding-bottom: 4px; }
+.doc-body h2 { border-bottom: 1px dashed var(--ink); padding-bottom: 4px; }
+.doc-body p { margin: 12px 0; }
+.doc-body ul { list-style-type: "- "; padding-left: 1.5em; margin: 12px 0; }
+.doc-body ol { padding-left: 2em; margin: 12px 0; }
+.doc-body li { margin: 4px 0; }
+.doc-body code {
+  font: inherit;
+  border-bottom: 1px dotted var(--ink);
+  padding: 0 1px;
+}
+.doc-body a { color: inherit; text-decoration: underline; }
+.doc-body strong { font-weight: 700; }
+.doc-body em { font-style: italic; }
+.doc-body hr {
+  border: 0;
+  border-top: 1px solid var(--ink);
+  margin: 24px 0;
+}
+.md-code {
+  border: 1px solid var(--ink);
+  padding: 8px 12px;
+  margin: 12px 0;
+  white-space: pre-wrap;
+}
+.md-table {
+  margin: 12px 0;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+@media (max-width: 600px) {
+  body { font-size: 13px; padding: 16px 12px 48px; }
+}

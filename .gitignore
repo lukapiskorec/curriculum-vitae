@@ -36,3 +36,6 @@ CLAUDE.md
 
 # Source documents (originals — only derivative files should be tracked)
 source documents/
+
+# Planning documents
+plans/
