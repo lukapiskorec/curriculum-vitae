@@ -33,67 +33,23 @@ html, body {
   padding: 0;
   background: var(--paper);
   color: var(--ink);
+  overflow-x: hidden;
 }
 
 body {
   font-family: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
   font-size: 14px;
   line-height: 1.55;
-  padding: 32px 16px 64px;
+  padding: 0 0 64px;
 }
 
-main { max-width: var(--col); margin: 0 auto; }
+main { max-width: var(--col); margin: 0 auto; padding: 0 16px; }
 
-pre, .mono {
+pre {
   font: inherit;
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.profile-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 24px;
-  align-items: flex-start;
-  margin: 24px 0;
-}
-.profile-block {
-  flex: 1 1 320px;
-  margin: 0;
-  white-space: pre-wrap;
-}
-.portrait {
-  flex: 0 0 auto;
-  margin: 0;
-  white-space: pre;
-  line-height: 1.0;
-}
-@media (max-width: 600px) {
-  .portrait { font-size: 12px; }
-}
-
-#banner {
-  max-width: var(--col);
-  margin: 0 auto 32px;
-  overflow-x: auto;
-}
-.banner-art {
-  font-size: 10px;
-  line-height: 1.0;
-  white-space: pre;
-  margin: 0;
-}
-.banner-name {
-  margin-top: 18px;
-  letter-spacing: 0.05em;
-  font-weight: 700;
-}
-@media (max-width: 720px) {
-  .banner-art { font-size: 7px; }
-}
-@media (max-width: 480px) {
-  .banner-art { font-size: 6px; }
 }
 
 button {
@@ -106,20 +62,99 @@ button {
 }
 button:hover { background: var(--ink); color: var(--paper); }
 button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+button:disabled { opacity: 0.35; cursor: default; }
+button:disabled:hover { background: transparent; color: inherit; }
 
-footer {
-  max-width: var(--col);
-  margin: 32px auto 0;
-  display: flex;
-  gap: 16px;
+/* ─── Banner (marquee + shimmer) ────────────────────────────────────────── */
+#banner {
+  border-bottom: 1px solid var(--ink);
+  padding: 18px 0;
+  margin-bottom: 24px;
+}
+.marquee {
+  overflow: hidden;
+  width: 100%;
+}
+.marquee-track {
+  display: inline-flex;
+  width: max-content;
+  animation: marquee-scroll 30s linear infinite;
+  will-change: transform;
+}
+.banner-art {
+  font-size: 11px;
+  line-height: 1.0;
+  white-space: pre;
+  margin: 0;
+  padding-right: 64px;
+  user-select: none;
+}
+.banner-art span { display: inline; }
+@keyframes marquee-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+@media (max-width: 720px) { .banner-art { font-size: 9px; } }
+@media (max-width: 480px) { .banner-art { font-size: 7px; } }
+/* Marquee animation is forced on by design — see Banner module. */
+
+/* ─── Typing reveal ──────────────────────────────────────────────────────── */
+.tt-char { visibility: hidden; }
+.tt-char.tt-on { visibility: visible; }
+
+/* ─── Identity ───────────────────────────────────────────────────────────── */
+.name {
+  font-size: 1.5em;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin: 24px 0 12px;
+}
+.identity-statement {
+  margin: 0 0 32px;
+  line-height: 1.6;
 }
 
-/* Chip rail */
+/* ─── Bio (portrait + variable bio) ──────────────────────────────────────── */
+.bio-row {
+  display: flex;
+  gap: 32px;
+  align-items: flex-start;
+  margin: 32px 0;
+}
+.bio-text { flex: 1 1 0; min-width: 0; }
+.bio-text p { margin: 0 0 14px; line-height: 1.65; }
+.bio-controls {
+  margin-top: 14px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+}
+.bio-length { opacity: 0.7; }
+.portrait-wrap { flex: 0 0 auto; }
+.portrait {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+}
+@media (max-width: 600px) {
+  .bio-row { flex-direction: column; gap: 18px; }
+}
+
+/* ─── Stats grid ─────────────────────────────────────────────────────────── */
+.stats-block {
+  margin: 24px 0 0;
+  white-space: pre-wrap;
+}
+.stats-block strong { font-weight: 700; }
+.stats-block a { color: inherit; text-decoration: underline; }
+
+/* ─── Chip rail ──────────────────────────────────────────────────────────── */
 #chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 14px;
-  margin: 24px 0;
+  margin: 32px 0 24px;
   padding: 10px 0;
   border-top: 1px dashed var(--ink);
   border-bottom: 1px dashed var(--ink);
@@ -127,20 +162,26 @@ footer {
 .chip {
   padding: 2px 4px;
   white-space: nowrap;
+  font: inherit;
 }
 .chip[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
-
-/* Doc section frame */
-.doc { margin: 32px 0; }
-.doc-head, .doc-foot {
-  font-size: 12px;
-  opacity: 0.75;
-  margin: 10px 0;
-  white-space: pre;
-  overflow-x: auto;
+.chip.docref {
+  display: inline-block;
+  vertical-align: baseline;
+}
+.docref-static {
+  border-bottom: 1px dotted currentColor;
+  opacity: 0.85;
 }
 
-/* Markdown rendered inside a doc body */
+/* ─── Doc sections (rendered markdown) ───────────────────────────────────── */
+.doc {
+  margin: 28px 0;
+  padding-top: 18px;
+  border-top: 1px dashed var(--ink);
+}
+.doc:first-of-type { border-top: 0; padding-top: 0; }
+
 .doc-body h1, .doc-body h2, .doc-body h3 {
   font-size: inherit;
   font-weight: 700;
@@ -150,7 +191,7 @@ footer {
 }
 .doc-body h1 { border-bottom: 1px solid var(--ink); padding-bottom: 4px; }
 .doc-body h2 { border-bottom: 1px dashed var(--ink); padding-bottom: 4px; }
-.doc-body p { margin: 12px 0; }
+.doc-body p { margin: 12px 0; line-height: 1.65; }
 .doc-body ul { list-style-type: "- "; padding-left: 1.5em; margin: 12px 0; }
 .doc-body ol { padding-left: 2em; margin: 12px 0; }
 .doc-body li { margin: 4px 0; }
@@ -179,6 +220,22 @@ footer {
   overflow-x: auto;
 }
 
+/* ─── Footer ─────────────────────────────────────────────────────────────── */
+footer {
+  max-width: var(--col);
+  margin: 48px auto 0;
+  padding: 0 16px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.palette-name {
+  opacity: 0.65;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+}
+
 @media (max-width: 600px) {
-  body { font-size: 13px; padding: 16px 12px 48px; }
+  body { font-size: 13px; }
 }

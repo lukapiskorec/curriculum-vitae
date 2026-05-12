@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Luka Piškorec — Curriculum Vitae</title>
   <meta name="description" content="Computational architect, generative artist, researcher and educator. Co-founder of TEN Studio (Zürich/Belgrade) and {protocell:labs} (Helsinki). Based in Helsinki, Finland.">
+  <link rel="preload" href="fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="style.css">
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -12,11 +14,7 @@
     "name": "Luka Piškorec",
     "alternateName": "Luka Piskorec",
     "jobTitle": "Computational architect, generative artist, researcher, educator",
-    "address": {
-      "@type": "PostalAddress",
-      "addressLocality": "Helsinki",
-      "addressCountry": "Finland"
-    },
+    "address": { "@type": "PostalAddress", "addressLocality": "Helsinki", "addressCountry": "Finland" },
     "nationality": "Croatian",
     "alumniOf": [
       { "@type": "EducationalOrganization", "name": "ETH Zürich" },
@@ -32,18 +30,19 @@
     ]
   }
   </script>
-  <link rel="preload" href="fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header id="banner"></header>
   <main>
-    <section id="profile"></section>
+    <section id="identity"></section>
+    <section id="bio"></section>
+    <section id="stats"></section>
     <nav id="chips" aria-label="Sections"></nav>
     <div id="sections"></div>
   </main>
   <footer>
     <button id="reroll" type="button">[reroll palette]</button>
+    <span id="palette-name" class="palette-name"></span>
     <button id="export" type="button">[export as .md]</button>
   </footer>
   <script type="module" src="app.js"></script>

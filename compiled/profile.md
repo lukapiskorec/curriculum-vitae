@@ -6,7 +6,7 @@ name:
   simplified: Luka Piskorec
   note: Piškorec (with diacritic) is canonical. Piskorec is used on social media and some institutional records.
 title: MSc ETH Arch
-profession: Computational architect, generative artist, researcher, educator
+profession: computational architect, generative artist, researcher, educator
 year_of_birth: 1986
 place_of_birth: Croatia
 nationality: Croatian
@@ -21,8 +21,8 @@ languages:
   - { language: German, level: fluent }
   - { language: Finnish, level: basic }
 current_roles:
-  - { role: Co-founder, organization: TEN Studio, location: Zürich/Belgrade, since: 2015 }
-  - { role: Co-founder, organization: "{protocell:labs}", location: Helsinki, since: 2021 }
+  - { role: co-founder, organization: TEN Studio, location: Zürich/Belgrade, since: 2015 }
+  - { role: co-founder, organization: "{protocell:labs}", location: Helsinki, since: 2021 }
 links:
   websites:
     - { label: "{protocell:labs}", url: https://protocell.xyz }
