@@ -625,6 +625,7 @@ async function tryLoadImage(src) {
 
 const Portrait = {
   imageData: null,
+  _ditherToken: null,
   cssWidth: PORTRAIT_TARGET_CSS_W,
   cssHeight: PORTRAIT_TARGET_CSS_W * 1000 / 752,
 
@@ -688,6 +689,373 @@ const Portrait = {
     ctx.clearRect(0, 0, devW, devH);
     ctx.drawImage(tmp, 0, 0, devW, devH);
   },
+
+  // Kick off the Dither precompute and animation. Fire-and-forget.
+  // Cancels any in-progress precompute first so DPR-change rebuilds are safe.
+  async startAnimation(canvas) {
+    Dither.stop();
+    Dither._pausedAt = 0;
+    if (Portrait._ditherToken) Portrait._ditherToken.aborted = true;
+    const token = { aborted: false };
+    Portrait._ditherToken = token;
+    try {
+      const ok = await Dither.precompute({
+        dpr: window.devicePixelRatio || 1,
+        signal: token,
+      });
+      if (!ok || token.aborted) return;
+      Dither.runLoop(canvas);
+    } catch (e) {
+      console.warn("[Portrait] dither animation failed:", e);
+      // Static portrait stays as the visible fallback.
+    }
+  },
+};
+
+// ─── Dither (animated traveling Floyd-Steinberg) ──────────────────────────
+// Pre-computes N 1-bit frame masks during boot (after first static paint),
+// then runs a RAF loop that recolors the current mask with the active palette.
+// See docs/superpowers/specs/2026-05-12-traveling-dither-design.md.
+
+// ┌── Mode + Presets ───────────────────────────────────────────────────────┐
+// │ Two dither algorithms — pick via `mode`. Reload page to apply.          │
+// │                                                                          │
+// │ "fs"    Floyd-Steinberg error diffusion. Per-frame noise realizations   │
+// │         travel across a 2× wide canvas, cropped back to image bounds.   │
+// │         Reads as alive-but-incoherent grain. Heavy precompute.          │
+// │                                                                          │
+// │         FS presets (active when mode = "fs"):                           │
+// │           default        fsTravelMs 5000   fsStepPx 4   N=50            │
+// │           smooth         fsTravelMs 8000   fsStepPx 2   N=100           │
+// │           slow + smooth  fsTravelMs 15000  fsStepPx 1   N=200, ~11MB    │
+// │           meditative     fsTravelMs 40000  fsStepPx 1   N=200, ~11MB    │
+// │                                                                          │
+// │ "bayer" Ordered (Bayer) threshold dither with a sliding matrix. Produces│
+// │         visible diagonal bands marching smoothly upward across the      │
+// │         image. Cheap precompute (only matrixSize frames).               │
+// │                                                                          │
+// │         Bayer presets (active when mode = "bayer"):                     │
+// │           subtle drift   bayerMatrixSize 4   bayerCycleMs 1500          │
+// │           classic bands  bayerMatrixSize 8   bayerCycleMs 1000  ← active│
+// │           brisk          bayerMatrixSize 8   bayerCycleMs 500           │
+// │           slow march     bayerMatrixSize 8   bayerCycleMs 2400          │
+// │                                                                          │
+// │         bayerCycleMs = duration of one matrix cycle (= matrixSize px of │
+// │         motion). Band velocity in px/sec = 1000 * matrixSize / cycleMs. │
+// └──────────────────────────────────────────────────────────────────────────┘
+const DITHER = {
+  mode: "bayer",             // "fs" or "bayer"
+
+  // FS mode tuning
+  fsTravelMs: 8000,
+  fsStepPx: 2,
+
+  // Bayer mode tuning
+  bayerMatrixSize: 8,        // 4 or 8
+  bayerCycleMs: 1000,
+
+  internalWByDpr: { 1.0: 200, 1.25: 250, 1.5: 300, 2.0: 400 },
+  originalSrc: "assets/profile/original/luka_head_tencent_hunyuan_V31_view_02_original.png",
+};
+
+const Dither = {
+  // State (populated by precompute / runLoop)
+  frames: null,
+  W: 0, H: 0, N: 0,
+  dprAtBuild: 0,
+  bgRGB: null,
+  rafId: 0,
+  lastK: -1,
+  startTime: 0,
+  abortToken: null,
+  scratchCanvas: null,
+  scratchCtx: null,
+
+  _pickInternalW(dpr) {
+    const keys = Object.keys(DITHER.internalWByDpr).map(Number);
+    let best = keys[0];
+    for (const k of keys) {
+      if (Math.abs(k - dpr) < Math.abs(best - dpr)) best = k;
+    }
+    return DITHER.internalWByDpr[best];
+  },
+
+  _loadOriginal() {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.decoding = "async";
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`Dither: failed to load ${DITHER.originalSrc}`));
+      img.src = DITHER.originalSrc;
+    });
+  },
+
+  _downscale(img, W) {
+    const H = Math.round(W * img.naturalHeight / img.naturalWidth);
+    const c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    const ctx = c.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, 0, 0, W, H);
+    return { canvas: c, ctx, W, H };
+  },
+
+  _sampleBg(smallCtx) {
+    const d = smallCtx.getImageData(0, 0, 1, 1).data;
+    return [d[0], d[1], d[2]];
+  },
+
+  // Floyd-Steinberg, standard kernel (7/16, 3/16, 5/16, 1/16).
+  // Input:  ImageData (RGBA, any size)
+  // Output: Uint8Array of length width*height; 0 = ink (dark), 1 = paper (light)
+  _floydSteinberg(imageData) {
+    const w = imageData.width;
+    const h = imageData.height;
+    const src = imageData.data;
+    // Working buffer in floats so error diffusion doesn't clamp early.
+    const lum = new Float32Array(w * h);
+    for (let i = 0, p = 0; i < src.length; i += 4, p++) {
+      // Rec. 601 luminance.
+      lum[p] = 0.299 * src[i] + 0.587 * src[i + 1] + 0.114 * src[i + 2];
+    }
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const old = lum[i];
+        const neu = old < 128 ? 0 : 255;
+        out[i] = neu === 0 ? 0 : 1;
+        const err = old - neu;
+        if (x + 1 < w)               lum[i + 1]         += err * 7 / 16;
+        if (y + 1 < h) {
+          if (x > 0)                 lum[i + w - 1]     += err * 3 / 16;
+                                     lum[i + w]         += err * 5 / 16;
+          if (x + 1 < w)             lum[i + w + 1]     += err * 1 / 16;
+        }
+      }
+    }
+    return out;
+  },
+
+  // FS: generate one frame mask via Floyd-Steinberg of a wide canvas.
+  // Builds a 2W × H wide canvas filled with bg, places the downscaled image
+  // at xOffset = W - k*stepPx, dithers the full wide canvas, returns the
+  // W × H crop starting at that xOffset.
+  _generateFrameFS(smallCanvas, bgRGB, W, H, k, stepPx) {
+    const wideW = 2 * W;
+    const wide = document.createElement("canvas");
+    wide.width = wideW; wide.height = H;
+    const wctx = wide.getContext("2d");
+
+    wctx.fillStyle = `rgb(${bgRGB[0]},${bgRGB[1]},${bgRGB[2]})`;
+    wctx.fillRect(0, 0, wideW, H);
+
+    const xOffset = W - k * stepPx;
+    wctx.imageSmoothingEnabled = false;
+    wctx.drawImage(smallCanvas, xOffset, 0);
+
+    const wideData = wctx.getImageData(0, 0, wideW, H);
+    const wideMask = this._floydSteinberg(wideData);
+
+    // Crop W × H window starting at column xOffset.
+    const out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      const srcRow = y * wideW + xOffset;
+      const dstRow = y * W;
+      for (let x = 0; x < W; x++) {
+        out[dstRow + x] = wideMask[srcRow + x];
+      }
+    }
+    return out;
+  },
+
+  // Bayer ordered-dither threshold matrices. Values in [0, M*M-1].
+  _bayerMatrices: {
+    4: [
+       0,  8,  2, 10,
+      12,  4, 14,  6,
+       3, 11,  1,  9,
+      15,  7, 13,  5,
+    ],
+    8: [
+       0, 32,  8, 40,  2, 34, 10, 42,
+      48, 16, 56, 24, 50, 18, 58, 26,
+      12, 44,  4, 36, 14, 46,  6, 38,
+      60, 28, 52, 20, 62, 30, 54, 22,
+       3, 35, 11, 43,  1, 33,  9, 41,
+      51, 19, 59, 27, 49, 17, 57, 25,
+      15, 47,  7, 39, 13, 45,  5, 37,
+      63, 31, 55, 23, 61, 29, 53, 21,
+    ],
+  },
+
+  // Bayer: generate one frame mask by thresholding the static image against
+  // an MxM Bayer matrix indexed at (y + k) mod M. Incrementing k shifts the
+  // threshold pattern upward across the (fixed) image — bands travel bottom→top.
+  // The image content does not move; only the threshold pattern does.
+  _generateFrameBayer(smallCtx, W, H, k, matrixSize) {
+    const data = smallCtx.getImageData(0, 0, W, H).data;
+    const M = matrixSize;
+    const mask = M - 1;
+    const mat = this._bayerMatrices[M];
+    const scale = 255 / (M * M);
+    const out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      const yrow = ((y + k) & mask) * M;
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        const threshold = (mat[yrow + (x & mask)] + 0.5) * scale;
+        out[i] = lum > threshold ? 1 : 0;
+      }
+    }
+    return out;
+  },
+
+  async precompute({ dpr, signal } = {}) {
+    dpr = dpr || (window.devicePixelRatio || 1);
+    const W = this._pickInternalW(dpr);
+
+    const img = await this._loadOriginal();
+    if (signal?.aborted) return false;
+
+    const small = this._downscale(img, W);
+    const H = small.H;
+
+    let frames, N;
+    if (DITHER.mode === "bayer") {
+      const M = DITHER.bayerMatrixSize;
+      N = M;
+      frames = new Array(N);
+      for (let k = 0; k < N; k++) {
+        if (signal?.aborted) return false;
+        frames[k] = this._generateFrameBayer(small.ctx, W, H, k, M);
+        await new Promise(r => setTimeout(r, 0));
+      }
+      this.bgRGB = null;
+    } else {
+      const stepPx = DITHER.fsStepPx;
+      const bg = this._sampleBg(small.ctx);
+      N = Math.floor(W / stepPx);
+      frames = new Array(N);
+      for (let k = 0; k < N; k++) {
+        if (signal?.aborted) return false;
+        frames[k] = this._generateFrameFS(small.canvas, bg, W, H, k, stepPx);
+        await new Promise(r => setTimeout(r, 0));
+      }
+      this.bgRGB = bg;
+    }
+    if (signal?.aborted) return false;
+
+    this.frames = frames;
+    this.W = W; this.H = H; this.N = N;
+    this.dprAtBuild = dpr;
+
+    // Reusable scratch canvas for paintFrame.
+    this.scratchCanvas = document.createElement("canvas");
+    this.scratchCanvas.width = W;
+    this.scratchCanvas.height = H;
+    this.scratchCtx = this.scratchCanvas.getContext("2d");
+
+    return true;
+  },
+  paintFrame(canvas, k, palette) {
+    if (!this.frames) return;
+    if (k < 0 || k >= this.N) return;
+
+    const mask = this.frames[k];
+    const W = this.W, H = this.H;
+    const ink = palette.ink, paper = palette.paper;
+
+    const out = this.scratchCtx.createImageData(W, H);
+    const od = out.data;
+    for (let i = 0, p = 0; p < mask.length; i += 4, p++) {
+      const c = mask[p] === 0 ? ink : paper;
+      od[i] = c[0]; od[i + 1] = c[1]; od[i + 2] = c[2]; od[i + 3] = 255;
+    }
+    this.scratchCtx.putImageData(out, 0, 0);
+
+    const dpr = window.devicePixelRatio || 1;
+    // CSS size: match the existing Portrait sizing logic so the canvas
+    // visually matches the static variant the page just painted.
+    const cssW = Portrait.cssWidth;
+    const cssH = Portrait.cssHeight;
+    const devW = Math.round(cssW * dpr);
+    const devH = Math.round(cssH * dpr);
+
+    if (canvas.width !== devW)  canvas.width = devW;
+    if (canvas.height !== devH) canvas.height = devH;
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, devW, devH);
+    ctx.drawImage(this.scratchCanvas, 0, 0, devW, devH);
+
+    this.lastK = k;
+  },
+  _currentPalette() {
+    return {
+      ink: hexToRgb(readCssVar("--ink")),
+      paper: hexToRgb(readCssVar("--paper")),
+    };
+  },
+
+  runLoop(canvas) {
+    this.stop();
+    this.startTime = performance.now();
+    this.lastK = -1;
+    const travelMs = DITHER.mode === "bayer" ? DITHER.bayerCycleMs : DITHER.fsTravelMs;
+    const tick = (now) => {
+      const elapsed = now - this.startTime;
+      const k = Math.floor((elapsed / travelMs) * this.N) % this.N;
+      if (k !== this.lastK) {
+        this.paintFrame(canvas, k, this._currentPalette());
+      }
+      this.rafId = requestAnimationFrame(tick);
+    };
+    this.rafId = requestAnimationFrame(tick);
+
+    // Pause when tab is hidden; resume preserving offset. Re-register on
+    // each runLoop call so the handler captures the current `tick` closure.
+    if (this._visHandler) {
+      document.removeEventListener("visibilitychange", this._visHandler);
+    }
+    this._visHandler = () => {
+      if (document.hidden) {
+        if (this.rafId) cancelAnimationFrame(this.rafId);
+        this.rafId = 0;
+        this._pausedAt = performance.now();
+      } else if (this._pausedAt) {
+        this.startTime += performance.now() - this._pausedAt;
+        this._pausedAt = 0;
+        this.rafId = requestAnimationFrame(tick);
+      }
+    };
+    document.addEventListener("visibilitychange", this._visHandler);
+  },
+
+  stop() {
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    this.rafId = 0;
+  },
+
+  _modes: ["bayer", "fs"],
+  _modeDisplayName(m) { return m === "fs" ? "floyd-steinberg" : "bayer"; },
+  _updateModeLabel() {
+    const el = document.getElementById("graphics-name");
+    if (el) el.textContent = Dither._modeDisplayName(DITHER.mode);
+  },
+  nextMode() {
+    const idx = Dither._modes.indexOf(DITHER.mode);
+    DITHER.mode = Dither._modes[(idx + 1) % Dither._modes.length];
+    Dither._updateModeLabel();
+    const canvas = document.getElementById("portrait");
+    if (canvas) Portrait.startAnimation(canvas);
+  },
 };
 
 // ─── Bios extractor ───────────────────────────────────────────────────────
@@ -736,6 +1104,12 @@ const BioCtl = {
       <div class="bio-row">
         <div class="portrait-wrap">
           <canvas class="portrait" id="portrait" aria-label="Portrait of Luka Piškorec"></canvas>
+          <div class="portrait-controls">
+            <button id="reroll" type="button">[palette]</button>
+            <span id="palette-name" class="palette-name"></span>
+            <button id="graphics" type="button">[graphics]</button>
+            <span id="graphics-name" class="palette-name"></span>
+          </div>
         </div>
         <div class="bio-text">
           <div id="bio-body"></div>
@@ -749,13 +1123,25 @@ const BioCtl = {
     await Portrait.load();
     const canvas = document.getElementById("portrait");
     Portrait.paintTo(canvas);
-    Palette.subs.push(() => Portrait.paintTo(canvas));
+    Portrait.startAnimation(canvas);
+    Palette.subs.push(() => {
+      // If the dither animation is running, the next RAF tick will pick up
+      // the new palette automatically. Force an immediate repaint of the
+      // current frame so palette changes feel instant rather than waiting
+      // up to ~100ms for the next frame boundary.
+      if (Dither.frames && Dither.rafId) {
+        Dither.paintFrame(canvas, Dither.lastK >= 0 ? Dither.lastK : 0, Dither._currentPalette());
+      } else {
+        Portrait.paintTo(canvas);
+      }
+    });
     // Window zoom / window resize — repaint at current DPR.
     window.addEventListener("resize", () => Portrait.paintTo(canvas));
     // Cross-monitor DPR change — reload the correct variant, then repaint.
     onDevicePixelRatioChange(async () => {
       await Portrait.load();
       Portrait.paintTo(canvas);
+      Portrait.startAnimation(canvas);
     });
     document.getElementById("bio-shorter").addEventListener("click", () => {
       if (BioCtl.i > 0) { BioCtl.i--; BioCtl.repaint(); }
@@ -763,6 +1149,13 @@ const BioCtl = {
     document.getElementById("bio-longer").addEventListener("click", () => {
       if (BioCtl.i < BioCtl.lengths.length - 1) { BioCtl.i++; BioCtl.repaint(); }
     });
+    // Reroll + graphics controls live inside the portrait area now.
+    document.getElementById("reroll").addEventListener("click", Palette.next);
+    document.getElementById("graphics").addEventListener("click", Dither.nextMode);
+    // The palette label span didn't exist when Palette.pick ran at boot;
+    // re-apply the current palette so its label gets populated.
+    Palette.pick(Palette.i);
+    Dither._updateModeLabel();
     BioCtl.repaint();
   },
 
@@ -941,7 +1334,6 @@ const Export = {
 // ─── Boot ─────────────────────────────────────────────────────────────────
 async function boot() {
   Palette.pick();
-  document.getElementById("reroll").addEventListener("click", Palette.next);
   document.getElementById("export").addEventListener("click", Export.download);
 
   // Delegated chip / docref click handler (covers rail + in-section refs).

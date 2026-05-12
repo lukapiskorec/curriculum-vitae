@@ -135,6 +135,15 @@ button:disabled:hover { background: transparent; color: inherit; }
   image-rendering: pixelated;
   image-rendering: -moz-crisp-edges;
 }
+.portrait-controls {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 6px 10px;
+  align-items: center;
+  justify-content: start;
+  font-size: 12px;
+}
 @media (max-width: 600px) {
   .bio-row { flex-direction: column; gap: 18px; }
 }
