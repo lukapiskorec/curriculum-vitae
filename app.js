@@ -457,6 +457,14 @@ const Banner = {
     marquee.addEventListener("pointerenter", Banner.onEnter);
     marquee.addEventListener("pointermove", Banner.onMove);
     marquee.addEventListener("pointerleave", Banner.onLeave);
+    // On touch/pen, the browser implicitly captures the pointer, so
+    // `pointerleave` often doesn't fire when the finger lifts. Treat
+    // pointerup/pointercancel as a leave for non-mouse pointers so the
+    // shimmer can decay normally. Mouse clicks are ignored on purpose —
+    // we don't want a click to terminate the hover.
+    const touchEnd = (e) => { if (e.pointerType !== "mouse") Banner.onLeave(); };
+    marquee.addEventListener("pointerup", touchEnd);
+    marquee.addEventListener("pointercancel", touchEnd);
   },
 
   cachePositions() {
