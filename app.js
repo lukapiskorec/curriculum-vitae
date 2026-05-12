@@ -55,15 +55,41 @@ function readCssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+// Detect devicePixelRatio changes (e.g. browser dragged to another monitor
+// with a different scaling). `resize` doesn't fire reliably across monitors;
+// a `(resolution: Xdppx)` media query does — when DPR changes the query
+// stops matching, we get notified, then we re-arm for the new DPR.
+function onDevicePixelRatioChange(callback) {
+  function arm() {
+    const dpr = window.devicePixelRatio || 1;
+    const mql = matchMedia(`(resolution: ${dpr}dppx)`);
+    mql.addEventListener("change", () => { callback(); arm(); }, { once: true });
+  }
+  arm();
+}
+
 // ─── Typing reveal ────────────────────────────────────────────────────────
 // Walk text nodes inside `container`, wrap each char in a span set to
-// visibility:hidden, then progressively flip them visible at `charsPerFrame`
-// per animation frame. After completion, unwrap the spans back into plain
-// text nodes so we don't leave thousands of spans in the DOM.
+// visibility:hidden, then progressively flip them visible. Speed is uneven
+// (variable batch size + occasional pauses + extra pause on punctuation) to
+// give a more hand-typed feel.
+//
+// ┌── Tune the typing speed here ──────────────────────────────────────────┐
+// │ All times are in milliseconds. Higher delays / lower minBatch = slower.│
+// └────────────────────────────────────────────────────────────────────────┘
+const TYPING = {
+  minBatch: 2,          // min chars revealed per tick
+  maxBatch: 6,          // max chars revealed per tick
+  baseDelay: 10,        // base delay between ticks (ms)
+  jitter: 5,            // random extra delay (0..jitter ms)
+  pauseChance: 0.06,    // probability of a longer pause
+  pauseDelay: 200,      // length of a longer pause (ms)
+  punctPause: 60,       // extra ms after , ; : .  ! ?
+};
 
-function typeReveal(container, opts = {}) {
-  const charsPerFrame = opts.charsPerFrame ?? 150;
+const PUNCT = new Set([",", ";", ":", ".", "!", "?", "—", "–"]);
 
+function typeReveal(container) {
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
   const textNodes = [];
   let n;
@@ -71,37 +97,56 @@ function typeReveal(container, opts = {}) {
     if (n.textContent.trim()) textNodes.push(n);
   }
 
+  // Wrap each original text node's chars in spans. Track each text node's
+  // spans as its own group so coalesce restores them in their original
+  // position — grouping by parent alone would collapse multiple text runs
+  // that happen to share the same parent (e.g. "before <em>x</em> after"
+  // inside one <p>) into a single block at the end of that parent.
   const charSpans = [];
+  const groups = [];
   for (const tn of textNodes) {
     const text = tn.textContent;
     const frag = document.createDocumentFragment();
+    const grp = [];
     for (let k = 0; k < text.length; k++) {
       const span = document.createElement("span");
       span.className = "tt-char";
       span.textContent = text[k];
       frag.appendChild(span);
       charSpans.push(span);
+      grp.push(span);
     }
     tn.parentNode.replaceChild(frag, tn);
+    groups.push(grp);
   }
   if (charSpans.length === 0) return;
 
   let i = 0;
   function tick() {
-    const target = Math.min(i + charsPerFrame, charSpans.length);
-    for (; i < target; i++) charSpans[i].classList.add("tt-on");
+    if (Math.random() < TYPING.pauseChance) {
+      setTimeout(tick, TYPING.pauseDelay);
+      return;
+    }
+    const batch = TYPING.minBatch +
+      Math.floor(Math.random() * (TYPING.maxBatch - TYPING.minBatch + 1));
+    const target = Math.min(i + batch, charSpans.length);
+    let punctHit = false;
+    for (; i < target; i++) {
+      charSpans[i].classList.add("tt-on");
+      if (PUNCT.has(charSpans[i].textContent)) punctHit = true;
+    }
     if (i < charSpans.length) {
-      requestAnimationFrame(tick);
+      const delay = TYPING.baseDelay
+        + Math.floor(Math.random() * TYPING.jitter)
+        + (punctHit ? TYPING.punctPause : 0);
+      setTimeout(tick, delay);
     } else {
-      // Coalesce per-char spans back into plain text nodes per parent.
-      const byParent = new Map();
-      for (const s of charSpans) {
-        if (!s.parentNode) continue;
-        let group = byParent.get(s.parentNode);
-        if (!group) { group = []; byParent.set(s.parentNode, group); }
-        group.push(s);
-      }
-      for (const [parent, group] of byParent) {
+      // Coalesce: each original text node's spans become one text node again,
+      // re-inserted at its original position.
+      for (const group of groups) {
+        if (group.length === 0) continue;
+        const parent = group[0].parentNode;
+        if (!parent) continue;
         const text = group.map(s => s.textContent).join("");
         const after = group[group.length - 1].nextSibling;
         for (const s of group) s.remove();
@@ -109,7 +154,7 @@ function typeReveal(container, opts = {}) {
       }
     }
   }
-  requestAnimationFrame(tick);
+  setTimeout(tick, 0);
 }
 
 // ─── Frontmatter ──────────────────────────────────────────────────────────
@@ -329,47 +374,60 @@ function inlineMd(s) {
 }
 
 // ─── Banner (marquee + shimmer) ───────────────────────────────────────────
-// One-line "CURRICULUM VITAE" scrolling left, with a hover-shimmer that
-// scrambles characters near the cursor and restores them shortly after.
+// One-line "CURRICULUM VITAE" scrolling left in discrete one-character steps
+// every 250ms (4 fps), giving the typewriter "clack" feel. A continuous RAF
+// loop applies a probabilistic shimmer near the cursor: closer chars have a
+// higher chance of swapping, swapped chars persist for a randomised lifespan,
+// and the effect decays over ~2s after the pointer leaves rather than
+// snapping off.
 
-const CURRICULUM = [
-  ":'######::'##::::'##:'########::'########::'####::'######::'##::::'##:'##:::::::'##::::'##:'##::::'##:",
-  "'##... ##: ##:::: ##: ##.... ##: ##.... ##:. ##::'##... ##: ##:::: ##: ##::::::: ##:::: ##: ###::'###:",
-  " ##:::..:: ##:::: ##: ##:::: ##: ##:::: ##:: ##:: ##:::..:: ##:::: ##: ##::::::: ##:::: ##: ####'####:",
-  " ##::::::: ##:::: ##: ########:: ########::: ##:: ##::::::: ##:::: ##: ##::::::: ##:::: ##: ## ### ##:",
-  " ##::::::: ##:::: ##: ##.. ##::: ##.. ##:::: ##:: ##::::::: ##:::: ##: ##::::::: ##:::: ##: ##. #: ##:",
-  " ##::: ##: ##:::: ##: ##::. ##:: ##::. ##::: ##:: ##::: ##: ##:::: ##: ##::::::: ##:::: ##: ##:.:: ##:",
-  ". ######::. #######:: ##:::. ##: ##:::. ##:'####:. ######::. #######:: ########:. #######:: ##:::: ##:",
-  ":......::::.......:::..:::::..::..:::::..::....:::......::::.......:::........:::.......:::..:::::..::",
-];
-const VITAE = [
-  "'##::::'##:'####:'########::::'###::::'########:",
-  " ##:::: ##:. ##::... ##..::::'## ##::: ##.....::",
-  " ##:::: ##:: ##::::: ##:::::'##:. ##:: ##:::::::",
-  " ##:::: ##:: ##::::: ##::::'##:::. ##: ######:::",
-  ". ##:: ##::: ##::::: ##:::: #########: ##...::::",
-  ":. ## ##:::: ##::::: ##:::: ##.... ##: ##:::::::",
-  "::. ###::::'####:::: ##:::: ##:::: ##: ########:",
-  ":::...:::::....:::::..:::::..:::::..::........::",
-];
-const SHIMMER_POOL = "#'.:`;,*+=~^|/$%@&!";
-const SHIMMER_RADIUS = 56;
-const SHIMMER_DURATION = 260;
+const BANNER_RAW = String.raw`________/\\\\\\\\\______________________________________________________________________________/\\\\\\_________________________________________________/\\\________/\\\_______________________________________________________________________
+______/\\\////////______________________________________________________________________________\////\\\________________________________________________\/\\\_______\/\\\______________________________________________________________________
+_____/\\\/______________________________________________________/\\\________________________________\/\\\________________________________________________\//\\\______/\\\___/\\\_____/\\\______________________________________________________
+_____/\\\______________/\\\____/\\\__/\\/\\\\\\\___/\\/\\\\\\\__\///______/\\\\\\\\__/\\\____/\\\____\/\\\_____/\\\____/\\\____/\\\\\__/\\\\\______________\//\\\____/\\\___\///___/\\\\\\\\\\\__/\\\\\\\\\________/\\\\\\\\___________________
+_____\/\\\_____________\/\\\___\/\\\_\/\\\/////\\\_\/\\\/////\\\__/\\\___/\\\//////__\/\\\___\/\\\____\/\\\____\/\\\___\/\\\__/\\\///\\\\\///\\\_____________\//\\\__/\\\_____/\\\_\////\\\////__\////////\\\_____/\\\/////\\\_________________
+______\//\\\____________\/\\\___\/\\\_\/\\\___\///__\/\\\___\///__\/\\\__/\\\_________\/\\\___\/\\\____\/\\\____\/\\\___\/\\\_\/\\\_\//\\\__\/\\\______________\//\\\/\\\_____\/\\\____\/\\\________/\\\\\\\\\\___/\\\\\\\\\\\_________________
+________\///\\\__________\/\\\___\/\\\_\/\\\_________\/\\\_________\/\\\_\//\\\________\/\\\___\/\\\____\/\\\____\/\\\___\/\\\_\/\\\__\/\\\__\/\\\_______________\//\\\\\______\/\\\____\/\\\_/\\___/\\\/////\\\__\//\\///////_________________
+___________\////\\\\\\\\\_\//\\\\\\\\\__\/\\\_________\/\\\_________\/\\\__\///\\\\\\\\_\//\\\\\\\\\___/\\\\\\\\\_\//\\\\\\\\\__\/\\\__\/\\\__\/\\\________________\//\\\_______\/\\\____\//\\\\\___\//\\\\\\\\/\\__\//\\\\\\\\\\______________
+_______________\/////////___\/////////___\///__________\///__________\///_____\////////___\/////////___\/////////___\/////////___\///___\///___\///__________________\///________\///______\/////_____\////////\//____\//////////______________`;
+
+const BANNER_ROWS = (() => {
+  const lines = BANNER_RAW.split("\n");
+  const w = Math.max(...lines.map(l => l.length));
+  return lines.map(l => l.padEnd(w, "_"));
+})();
+
+// ┌── Shimmer tuning (Banner) ─────────────────────────────────────────────┐
+// │ Tweak these to dial how lively / persistent / spreading the effect is. │
+// └────────────────────────────────────────────────────────────────────────┘
+const SHIMMER = {
+  pool: "/\\_-|.,:;'`",   // chars to swap in (visually compatible with banner)
+  radius: 70,             // px radius of influence around cursor
+  newCharProb: 0.18,      // max per-frame chance for a calm char to flip (at d=0)
+  rerollProb: 0.06,       // per-frame chance for a shimmer char to swap to a new pool char
+  rerollGate: 80,         // ms gate between rerolls per char
+  minLifeMs: 220,         // before this age, a char will not revert
+  maxLifeMs: 1400,        // by this age, char is force-reverted
+  revertBaseProb: 0.03,   // base per-frame revert chance after minLife
+  revertFarBonus: 0.18,   // extra revert prob when cursor is far
+  decayMs: 2000,          // how long shimmer keeps living after pointerleave
+  stepDelayMs: 1000,       // marquee step interval (4 fps)
+};
 
 const Banner = {
   track: null,
   spans: [],
   origChars: [],
-  spanPos: null,   // [{x, y}] static offsets relative to track origin
-  timers: new Map(),
-  lastX: 0,
-  lastY: 0,
-  pending: false,
+  spanPos: null,                 // [{x, y}] static offsets relative to track origin
+  shimmerState: new Map(),       // span index -> { startedAt, lastChange }
+  lastX: -1e9,
+  lastY: -1e9,
+  pointerInside: false,
+  pointerLeftAt: 0,
+  loopRunning: false,
 
   init(target) {
-    const gap = "  ";
-    const rows = CURRICULUM.map((c, i) => c + gap + VITAE[i]);
-    const copy = rows
+    const copy = BANNER_ROWS
       .map(r => r.split("").map(c => `<span>${escHtml(c)}</span>`).join(""))
       .join("\n");
     target.innerHTML = `
@@ -384,20 +442,25 @@ const Banner = {
     Banner.spans = [...marquee.querySelectorAll(".banner-art span")];
     Banner.origChars = Banner.spans.map(s => s.textContent);
 
-    // Cache static span offsets after fonts settle so we don't pay one
-    // getBoundingClientRect per span per pointermove.
-    const ready = (document.fonts && document.fonts.ready) || Promise.resolve();
-    ready.then(() => requestAnimationFrame(Banner.cachePositions));
-    window.addEventListener("resize", () => requestAnimationFrame(Banner.cachePositions));
+    // Step-wise marquee animation: each step = one banner-column width.
+    // Steps count = banner column count (one copy). Total cycle scrolls
+    // one copy width = -50% of the two-copy track.
+    const cols = BANNER_ROWS[0].length;
+    Banner.track.style.animation =
+      `marquee-scroll ${cols * SHIMMER.stepDelayMs}ms steps(${cols}) infinite`;
 
+    const cachePos = () => requestAnimationFrame(Banner.cachePositions);
+    const ready = (document.fonts && document.fonts.ready) || Promise.resolve();
+    ready.then(cachePos);
+    window.addEventListener("resize", cachePos);
+
+    marquee.addEventListener("pointerenter", Banner.onEnter);
     marquee.addEventListener("pointermove", Banner.onMove);
-    marquee.addEventListener("pointerleave", Banner.restoreAll);
+    marquee.addEventListener("pointerleave", Banner.onLeave);
   },
 
   cachePositions() {
     if (!Banner.track) return;
-    // BOTH the track box and each span's box include the current animation
-    // offset; subtracting them yields a stable layout-relative position.
     const t = Banner.track.getBoundingClientRect();
     Banner.spanPos = Banner.spans.map(s => {
       const r = s.getBoundingClientRect();
@@ -408,79 +471,176 @@ const Banner = {
     });
   },
 
+  onEnter(e) {
+    Banner.pointerInside = true;
+    Banner.pointerLeftAt = 0;
+    Banner.lastX = e.clientX;
+    Banner.lastY = e.clientY;
+    Banner.startLoop();
+  },
   onMove(e) {
     Banner.lastX = e.clientX;
     Banner.lastY = e.clientY;
-    if (Banner.pending) return;
-    Banner.pending = true;
-    requestAnimationFrame(() => {
-      Banner.pending = false;
-      Banner.shimmerNearCursor();
-    });
+    Banner.startLoop();
+  },
+  onLeave() {
+    Banner.pointerInside = false;
+    Banner.pointerLeftAt = performance.now();
   },
 
-  shimmerNearCursor() {
-    if (!Banner.spanPos) return;
+  startLoop() {
+    if (Banner.loopRunning) return;
+    Banner.loopRunning = true;
+    requestAnimationFrame(Banner.tick);
+  },
+
+  // Mouse-intensity factor (1.0 while pointer inside, decays to 0 after leave).
+  mouseFactor(now) {
+    if (Banner.pointerInside) return 1;
+    if (!Banner.pointerLeftAt) return 0;
+    return Math.max(0, 1 - (now - Banner.pointerLeftAt) / SHIMMER.decayMs);
+  },
+
+  tick(now) {
+    if (!Banner.spanPos) {
+      // Positions not yet cached (fonts still loading). Reschedule.
+      requestAnimationFrame(Banner.tick);
+      return;
+    }
     const t = Banner.track.getBoundingClientRect();
     const tx = t.left, ty = t.top;
     const mx = Banner.lastX, my = Banner.lastY;
-    const R = SHIMMER_RADIUS;
+    const R = SHIMMER.radius;
     const R2 = R * R;
+    const mouseF = Banner.mouseFactor(now);
+
+    const pool = SHIMMER.pool;
+    const poolLen = pool.length;
 
     for (let i = 0; i < Banner.spans.length; i++) {
       const orig = Banner.origChars[i];
       if (orig === " ") continue;
+
+      // Per-char distance-based intensity (uses cached offsets + live track box).
       const p = Banner.spanPos[i];
       const dx = tx + p.x - mx;
-      if (dx > R || dx < -R) continue;
       const dy = ty + p.y - my;
-      if (dy > R || dy < -R) continue;
-      if (dx * dx + dy * dy >= R2) continue;
+      let intensity;
+      if (dx > R || dx < -R || dy > R || dy < -R) {
+        intensity = 0;
+      } else {
+        const d2 = dx * dx + dy * dy;
+        intensity = d2 >= R2 ? 0 : (1 - Math.sqrt(d2) / R);
+      }
+      // Quadratic falloff feels more focused than linear.
+      intensity = intensity * intensity * mouseF;
 
+      const state = Banner.shimmerState.get(i);
       const span = Banner.spans[i];
-      span.textContent = SHIMMER_POOL[Math.floor(Math.random() * SHIMMER_POOL.length)];
-      clearTimeout(Banner.timers.get(span));
-      Banner.timers.set(span, setTimeout(() => {
-        span.textContent = orig;
-        Banner.timers.delete(span);
-      }, SHIMMER_DURATION));
-    }
-  },
 
-  restoreAll() {
-    for (const [span, t] of Banner.timers) {
-      clearTimeout(t);
-      const idx = Banner.spans.indexOf(span);
-      if (idx >= 0) span.textContent = Banner.origChars[idx];
+      if (state) {
+        const age = now - state.startedAt;
+
+        // Occasionally swap the shimmer char to a different pool char.
+        if (now - state.lastChange > SHIMMER.rerollGate
+            && Math.random() < SHIMMER.rerollProb + intensity * 0.25) {
+          span.textContent = pool[(Math.random() * poolLen) | 0];
+          state.lastChange = now;
+        }
+
+        // Revert: forced after max life, or stochastic after min life.
+        if (age >= SHIMMER.maxLifeMs) {
+          span.textContent = orig;
+          Banner.shimmerState.delete(i);
+        } else if (age >= SHIMMER.minLifeMs) {
+          const pRevert = SHIMMER.revertBaseProb
+            + (1 - intensity) * SHIMMER.revertFarBonus;
+          if (Math.random() < pRevert) {
+            span.textContent = orig;
+            Banner.shimmerState.delete(i);
+          }
+        }
+      } else if (intensity > 0) {
+        if (Math.random() < SHIMMER.newCharProb * intensity) {
+          span.textContent = pool[(Math.random() * poolLen) | 0];
+          Banner.shimmerState.set(i, { startedAt: now, lastChange: now });
+        }
+      }
     }
-    Banner.timers.clear();
+
+    // Keep looping while pointer is engaged OR there are still shimmer chars
+    // to revert. When both stop we can suspend the RAF.
+    const stillDecaying = !Banner.pointerInside &&
+      Banner.pointerLeftAt &&
+      (now - Banner.pointerLeftAt) < SHIMMER.decayMs + SHIMMER.maxLifeMs;
+    if (Banner.pointerInside || Banner.shimmerState.size > 0 || stillDecaying) {
+      requestAnimationFrame(Banner.tick);
+    } else {
+      Banner.loopRunning = false;
+    }
   },
 };
 
-// ─── Portrait (canvas, palette-reactive, DPR-aware nearest-neighbor) ──────
-// Source image is composed of 4×4 uniform blocks. To preserve the dither
-// crisply, every dither block must land on an integer number of device
-// pixels (= 4 * scale * devicePixelRatio must be a positive integer).
-// We pick the largest scale ∈ {0.25, 0.5, 1.0} that satisfies this for the
-// current DPR. Canvas's internal buffer is rendered at device-pixel
-// resolution; CSS width/height set the layout size.
+// ─── Portrait (canvas, palette-reactive, DPR-variant aware) ───────────────
+// Preferred path: pick the dithered variant whose native width matches the
+// current device pixel ratio. Each variant is sized so that
+//   native_px / dpr ≈ PORTRAIT_TARGET_CSS_W
+// which keeps the on-page size visually identical across DPRs while keeping
+// every dither pixel pinned to a device pixel (no resampling, no smear).
+//
+// If no variant is available (e.g. file not produced yet), we fall back to
+// the original quarter image at a fixed CSS size. On fractional DPRs the
+// fallback will show mild dither artefacts — produce a matching variant to
+// remove them.
 
-function pickPortraitScale(dpr) {
-  for (const s of [0.25, 0.5, 1.0]) {
-    const n = 4 * s * dpr;
-    if (Math.abs(n - Math.round(n)) < 1e-3 && Math.round(n) >= 1) return s;
+const PORTRAIT_VARIANTS = [
+  { dpr: 1.0,  src: "assets/profile/dithered/luka_head_200w.png" },
+  { dpr: 1.25, src: "assets/profile/dithered/luka_head_250w.png" },
+  { dpr: 1.5,  src: "assets/profile/dithered/luka_head_300w.png" },
+  { dpr: 2.0,  src: "assets/profile/dithered/luka_head_400w.png" },
+];
+const PORTRAIT_FALLBACK_SRC =
+  "assets/profile/dithered/luka_head_tencent_hunyuan_V31_view_02_quarter.png";
+const PORTRAIT_TARGET_CSS_W = 200;
+
+async function tryLoadImage(src) {
+  try {
+    const img = new Image();
+    img.decoding = "async";
+    img.src = src;
+    await img.decode();
+    return img;
+  } catch {
+    return null;
   }
-  return 1.0;
 }
 
 const Portrait = {
   imageData: null,
+  cssWidth: PORTRAIT_TARGET_CSS_W,
+  cssHeight: PORTRAIT_TARGET_CSS_W * 1000 / 752,
 
   async load() {
-    const img = new Image();
-    img.decoding = "async";
-    img.src = "assets/profile/dithered/luka_head_tencent_hunyuan_V31_view_02_quarter.png";
-    await img.decode();
+    const dpr = window.devicePixelRatio || 1;
+    // Try the closest-DPR variant first; only one network attempt before fallback.
+    const closest = [...PORTRAIT_VARIANTS]
+      .sort((a, b) => Math.abs(a.dpr - dpr) - Math.abs(b.dpr - dpr))[0];
+
+    let img = closest ? await tryLoadImage(closest.src) : null;
+    if (img) {
+      // Pin device-pixels = native size, derive CSS size from DPR.
+      Portrait.cssWidth = img.naturalWidth / dpr;
+      Portrait.cssHeight = img.naturalHeight / dpr;
+    } else {
+      img = await tryLoadImage(PORTRAIT_FALLBACK_SRC);
+      if (!img) return;
+      // Fixed CSS size — visually consistent across DPRs, but dither may
+      // smear slightly on fractional DPRs until a matching variant exists.
+      Portrait.cssWidth = PORTRAIT_TARGET_CSS_W;
+      Portrait.cssHeight =
+        PORTRAIT_TARGET_CSS_W * img.naturalHeight / img.naturalWidth;
+    }
+
     const raw = document.createElement("canvas");
     raw.width = img.naturalWidth;
     raw.height = img.naturalHeight;
@@ -507,16 +667,13 @@ const Portrait = {
     tmp.getContext("2d").putImageData(new ImageData(out, w, h), 0, 0);
 
     const dpr = window.devicePixelRatio || 1;
-    const scale = pickPortraitScale(dpr);
-    const cssW = Math.round(w * scale);
-    const cssH = Math.round(h * scale);
-    const devW = Math.round(cssW * dpr);
-    const devH = Math.round(cssH * dpr);
+    const devW = Math.round(Portrait.cssWidth * dpr);
+    const devH = Math.round(Portrait.cssHeight * dpr);
 
     canvas.width = devW;
     canvas.height = devH;
-    canvas.style.width = cssW + "px";
-    canvas.style.height = cssH + "px";
+    canvas.style.width = Portrait.cssWidth + "px";
+    canvas.style.height = Portrait.cssHeight + "px";
 
     const ctx = canvas.getContext("2d");
     ctx.imageSmoothingEnabled = false;
@@ -564,7 +721,6 @@ const BioCtl = {
   lengths: ["150", "250", "500"],
   i: 0,
   bios: null,
-  firstRender: true,
 
   async render() {
     BioCtl.bios = await Bios.load();
@@ -586,8 +742,13 @@ const BioCtl = {
     const canvas = document.getElementById("portrait");
     Portrait.paintTo(canvas);
     Palette.subs.push(() => Portrait.paintTo(canvas));
-    // Zoom changes / monitor moves can change devicePixelRatio — repaint.
+    // Window zoom / window resize — repaint at current DPR.
     window.addEventListener("resize", () => Portrait.paintTo(canvas));
+    // Cross-monitor DPR change — reload the correct variant, then repaint.
+    onDevicePixelRatioChange(async () => {
+      await Portrait.load();
+      Portrait.paintTo(canvas);
+    });
     document.getElementById("bio-shorter").addEventListener("click", () => {
       if (BioCtl.i > 0) { BioCtl.i--; BioCtl.repaint(); }
     });
@@ -602,8 +763,7 @@ const BioCtl = {
     const text = BioCtl.bios[`bio${wc}`] || "";
     const body = document.getElementById("bio-body");
     body.innerHTML = MD.render(text);
-    if (!BioCtl.firstRender) typeReveal(body, { charsPerFrame: 120 });
-    BioCtl.firstRender = false;
+    typeReveal(body);
     document.getElementById("bio-length").textContent = `${wc} words`;
     document.getElementById("bio-shorter").disabled = (BioCtl.i === 0);
     document.getElementById("bio-longer").disabled = (BioCtl.i === BioCtl.lengths.length - 1);
@@ -630,13 +790,17 @@ function renderStats(p) {
     "LANGUAGES",
     (p.languages || []).map(l => `${l.language} (${l.level})`),
   ]);
-  rows.push([
-    "LINKS",
-    (p.links?.websites || []).map(w => ({
-      text: w.url.replace(/^https?:\/\//, ""),
-      href: w.url,
-    })),
-  ]);
+  for (const [label, key] of [["WEBSITES", "websites"], ["SOCIAL", "social"], ["CODE", "code"]]) {
+    const items = p.links?.[key];
+    if (!items || items.length === 0) continue;
+    rows.push([
+      label,
+      items.map(w => ({
+        text: w.url.replace(/^https?:\/\//, ""),
+        href: w.url,
+      })),
+    ]);
+  }
 
   const maxLabel = Math.max(...rows.map(([k]) => k.length));
   const indent = " ".repeat(maxLabel + 3);
@@ -784,10 +948,20 @@ async function boot() {
   const { meta: profileMeta } = splitFrontmatter(profileSrc);
 
   Banner.init(document.getElementById("banner"));
+
+  // Initial typing reveal — fire each section's reveal as soon as its DOM is
+  // populated. typeReveal is fire-and-forget (setTimeout-driven), so the
+  // sections type in parallel from this point onward.
   await renderIdentity(profileMeta);
-  await BioCtl.render();
+  typeReveal(document.getElementById("identity"));
+
+  await BioCtl.render();  // bio-body types via BioCtl.repaint
+
   renderStats(profileMeta);
+  typeReveal(document.getElementById("stats"));
+
   buildChips();
+  typeReveal(document.getElementById("chips"));
 }
 
 boot().catch(e => console.error(e));

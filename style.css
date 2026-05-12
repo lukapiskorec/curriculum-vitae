@@ -67,7 +67,6 @@ button:disabled:hover { background: transparent; color: inherit; }
 
 /* ─── Banner (marquee + shimmer) ────────────────────────────────────────── */
 #banner {
-  border-bottom: 1px solid var(--ink);
   padding: 18px 0;
   margin-bottom: 24px;
 }
@@ -78,15 +77,14 @@ button:disabled:hover { background: transparent; color: inherit; }
 .marquee-track {
   display: inline-flex;
   width: max-content;
-  animation: marquee-scroll 30s linear infinite;
   will-change: transform;
+  /* animation is set from JS so we can compute steps from the banner width */
 }
 .banner-art {
   font-size: 11px;
   line-height: 1.0;
   white-space: pre;
   margin: 0;
-  padding-right: 64px;
   user-select: none;
 }
 .banner-art span { display: inline; }
