@@ -30,6 +30,149 @@ const Palette = {
   next() { Palette.pick((Palette.i + 1) % PALETTES.length); },
 };
 
+// ─── Paper texture (background dust + fibers) ─────────────────────────────
+// A single fixed-position SVG behind all content, generated once at boot
+// and regenerated on (debounced) resize. Dots and fibers inherit the ink
+// color via CSS `currentColor`, so palette changes recolor automatically.
+
+const PAPER = {
+  dustPer10kPx: 0.7,        // dust specks per 10000 px² of viewport
+  fiberPer10kPx: 0.15,      // fibers   per 10000 px² of viewport
+  dustRadiusRange: [0.4, 1.4],
+  dustOpacityRange: [0.10, 0.28],
+  fiberPointsRange: [3, 6], // points scattered per fiber (inclusive range)
+  fiberScatterRange: [7, 14], // radius around fiber center to scatter points (px)
+  fiberStrokeRange: [0.4, 0.7],
+  fiberOpacityRange: [0.18, 0.34],
+};
+
+const Paper = {
+  svg: null,
+  coveredW: 0,
+  coveredH: 0,
+
+  _measureDoc() {
+    return {
+      w: document.documentElement.clientWidth,
+      h: Math.max(document.documentElement.scrollHeight, window.innerHeight),
+    };
+  },
+
+  // Build the markup for particles inside the rectangle [x0, y0, x1, y1).
+  // Density scales with the rectangle's area so an extension strip gets
+  // the same per-px² density as the initial coverage.
+  _buildParts(x0, y0, x1, y1) {
+    const w = x1 - x0;
+    const h = y1 - y0;
+    const area = (w * h) / 10000;
+    const dustCount = Math.round(area * PAPER.dustPer10kPx);
+    const fiberCount = Math.round(area * PAPER.fiberPer10kPx);
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const parts = [];
+
+    for (let i = 0; i < dustCount; i++) {
+      const cx = (x0 + Math.random() * w).toFixed(1);
+      const cy = (y0 + Math.random() * h).toFixed(1);
+      const r = rand(PAPER.dustRadiusRange[0], PAPER.dustRadiusRange[1]).toFixed(2);
+      const o = rand(PAPER.dustOpacityRange[0], PAPER.dustOpacityRange[1]).toFixed(2);
+      parts.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="currentColor" opacity="${o}"/>`);
+    }
+    for (let i = 0; i < fiberCount; i++) {
+      const cx = x0 + Math.random() * w;
+      const cy = y0 + Math.random() * h;
+      const [minPts, maxPts] = PAPER.fiberPointsRange;
+      const nPts = minPts + Math.floor(Math.random() * (maxPts - minPts + 1));
+      const scatter = rand(PAPER.fiberScatterRange[0], PAPER.fiberScatterRange[1]);
+
+      // Scatter nPts inside a disc around (cx, cy); visit in generation order.
+      const pts = [];
+      for (let j = 0; j < nPts; j++) {
+        const ang = Math.random() * Math.PI * 2;
+        const r = Math.random() * scatter;
+        pts.push({ x: cx + Math.cos(ang) * r, y: cy + Math.sin(ang) * r });
+      }
+
+      // Catmull-Rom spline (tension = 0.5) through the points, expressed as
+      // chained cubic Béziers. Endpoints are duplicated so the curve starts
+      // and ends exactly on the first and last point.
+      const pad = [pts[0], ...pts, pts[pts.length - 1]];
+      let d = `M${pad[1].x.toFixed(1)},${pad[1].y.toFixed(1)}`;
+      for (let j = 1; j < pad.length - 2; j++) {
+        const p0 = pad[j - 1], p1 = pad[j], p2 = pad[j + 1], p3 = pad[j + 2];
+        const c1x = p1.x + (p2.x - p0.x) / 6;
+        const c1y = p1.y + (p2.y - p0.y) / 6;
+        const c2x = p2.x - (p3.x - p1.x) / 6;
+        const c2y = p2.y - (p3.y - p1.y) / 6;
+        d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} `
+          + `${c2x.toFixed(1)},${c2y.toFixed(1)} `
+          + `${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+      }
+
+      const sw = rand(PAPER.fiberStrokeRange[0], PAPER.fiberStrokeRange[1]).toFixed(2);
+      const o = rand(PAPER.fiberOpacityRange[0], PAPER.fiberOpacityRange[1]).toFixed(2);
+      parts.push(
+        `<path d="${d}" stroke="currentColor" stroke-width="${sw}" `
+        + `fill="none" opacity="${o}" stroke-linecap="round"/>`
+      );
+    }
+    return parts.join("");
+  },
+
+  generate() {
+    if (Paper.svg) Paper.svg.remove();
+    const { w, h } = Paper._measureDoc();
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "paper-bg");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("width", w);
+    svg.setAttribute("height", h);
+    svg.innerHTML = Paper._buildParts(0, 0, w, h);
+    document.body.insertBefore(svg, document.body.firstChild);
+    Paper.svg = svg;
+    Paper.coveredW = w;
+    Paper.coveredH = h;
+  },
+
+  // Extend the texture to cover a newly-grown document (e.g., a section
+  // was opened). If the width changed we have to regenerate; otherwise
+  // we append particles only for the new vertical strip so existing dust
+  // and fibers keep their positions and the user sees a stable surface.
+  extend() {
+    if (!Paper.svg) { Paper.generate(); return; }
+    const { w, h } = Paper._measureDoc();
+    if (w !== Paper.coveredW) { Paper.generate(); return; }
+    if (h <= Paper.coveredH) return;
+    Paper.svg.insertAdjacentHTML(
+      "beforeend",
+      Paper._buildParts(0, Paper.coveredH, w, h)
+    );
+    Paper.svg.setAttribute("height", h);
+    Paper.coveredH = h;
+  },
+
+  init() {
+    Paper.generate();
+    let resizeTimer = 0;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(Paper.generate, 200);
+    });
+    // Detect when document height grows (e.g., a section is opened by the
+    // chip rail) and extend the texture into the new strip without
+    // disturbing existing particles.
+    let rafToken = 0;
+    const ro = new ResizeObserver(() => {
+      if (rafToken) cancelAnimationFrame(rafToken);
+      rafToken = requestAnimationFrame(() => {
+        rafToken = 0;
+        Paper.extend();
+      });
+    });
+    ro.observe(document.body);
+  },
+};
+
 // ─── HTTP + helpers ───────────────────────────────────────────────────────
 async function fetchText(path) {
   const r = await fetch(path);
@@ -1334,6 +1477,7 @@ const Export = {
 // ─── Boot ─────────────────────────────────────────────────────────────────
 async function boot() {
   Palette.pick();
+  Paper.init();
   document.getElementById("export").addEventListener("click", Export.download);
 
   // Delegated chip / docref click handler (covers rail + in-section refs).

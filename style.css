@@ -31,9 +31,26 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: var(--paper);
   color: var(--ink);
   overflow-x: hidden;
+}
+/* Only html paints the paper background — keeping body transparent lets
+   the .paper-bg SVG (z-index:-1) show through across the entire viewport
+   instead of being covered by body's own background. */
+html { background: var(--paper); }
+
+/* Background paper texture (dust + fibers). Sits at document origin and
+   scrolls with the page so the texture reads as part of the paper, not a
+   dirty overlay. Inherits ink color via currentColor so palette changes
+   recolor automatically. Width/height are set on the SVG element itself
+   (in JS) to match document size at generation time. */
+.paper-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: -1;
+  color: var(--ink);
 }
 
 body {
