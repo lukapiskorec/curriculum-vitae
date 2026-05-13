@@ -156,7 +156,15 @@ const Paper = {
     let resizeTimer = 0;
     window.addEventListener("resize", () => {
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(Paper.generate, 200);
+      resizeTimer = setTimeout(() => {
+        // On mobile, scrolling toggles the URL bar and fires resize with the
+        // width unchanged. Regenerating would re-randomise every speck on
+        // each scroll; instead extend (or no-op if the height didn't grow)
+        // so existing dust/fibers stay put.
+        const { w } = Paper._measureDoc();
+        if (w === Paper.coveredW) Paper.extend();
+        else Paper.generate();
+      }, 200);
     });
     // Detect when document height grows (e.g., a section is opened by the
     // chip rail) and extend the texture into the new strip without
@@ -196,6 +204,20 @@ function hexToRgb(hex) {
 }
 function readCssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// On touch-input devices (phones, tablets) device pixels are physically much
+// smaller than on desktop, so a 1-device-pixel dither cell becomes a barely
+// visible smear. Treat the effective DPR as half the real DPR when picking
+// portrait variants and dither internal widths, so each dither pixel renders
+// as MOBILE_DITHER_SCALE device pixels via the nearest-neighbour upscaling
+// already in Portrait.paintTo / Dither.paintFrame.
+const MOBILE_DITHER_SCALE = 2;
+function isMobile() {
+  return matchMedia("(pointer: coarse)").matches;
+}
+function effectiveDitherDpr(dpr) {
+  return isMobile() ? dpr / MOBILE_DITHER_SCALE : dpr;
 }
 
 // Detect devicePixelRatio changes (e.g. browser dragged to another monitor
@@ -774,15 +796,24 @@ const Portrait = {
 
   async load() {
     const dpr = window.devicePixelRatio || 1;
+    const pickDpr = effectiveDitherDpr(dpr);
     // Try the closest-DPR variant first; only one network attempt before fallback.
     const closest = [...PORTRAIT_VARIANTS]
-      .sort((a, b) => Math.abs(a.dpr - dpr) - Math.abs(b.dpr - dpr))[0];
+      .sort((a, b) => Math.abs(a.dpr - pickDpr) - Math.abs(b.dpr - pickDpr))[0];
 
     let img = closest ? await tryLoadImage(closest.src) : null;
     if (img) {
-      // Pin device-pixels = native size, derive CSS size from DPR.
-      Portrait.cssWidth = img.naturalWidth / dpr;
-      Portrait.cssHeight = img.naturalHeight / dpr;
+      if (isMobile()) {
+        // Mobile: pin CSS size to the desktop target so the variant we picked
+        // (half-DPR resolution) gets nearest-neighbour upscaled by MOBILE_DITHER_SCALE.
+        Portrait.cssWidth = PORTRAIT_TARGET_CSS_W;
+        Portrait.cssHeight =
+          PORTRAIT_TARGET_CSS_W * img.naturalHeight / img.naturalWidth;
+      } else {
+        // Pin device-pixels = native size, derive CSS size from DPR.
+        Portrait.cssWidth = img.naturalWidth / dpr;
+        Portrait.cssHeight = img.naturalHeight / dpr;
+      }
     } else {
       img = await tryLoadImage(PORTRAIT_FALLBACK_SRC);
       if (!img) return;
@@ -915,10 +946,11 @@ const Dither = {
   scratchCtx: null,
 
   _pickInternalW(dpr) {
+    const target = effectiveDitherDpr(dpr);
     const keys = Object.keys(DITHER.internalWByDpr).map(Number);
     let best = keys[0];
     for (const k of keys) {
-      if (Math.abs(k - dpr) < Math.abs(best - dpr)) best = k;
+      if (Math.abs(k - target) < Math.abs(best - target)) best = k;
     }
     return DITHER.internalWByDpr[best];
   },

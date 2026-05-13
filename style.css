@@ -259,6 +259,15 @@ footer {
   font-size: 12px;
   letter-spacing: 0.05em;
 }
+.footer-credits {
+  flex-basis: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+}
+.footer-credits a { color: inherit; text-decoration: underline; }
 
 @media (max-width: 600px) {
   body { font-size: 13px; }
